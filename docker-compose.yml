@@ -1,131 +1,224 @@
 services:
   postgres:
-    image: postgres:15
-    container_name: postgres
-    restart: always
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: mapdata_db
-    ports:
-      - "5432:5432"
+    image: postgres:18.4
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
+
     networks:
-      - default-network
+      - global-network
 
-  # mysql:
-  #   image: mysql:8
-  #   container_name: mysql
-  #   restart: always
-  #   environment:
-  #     MYSQL_DATABASE: mapdata_db
-  #     MYSQL_USER: ${MYSQL_USER}
-  #     MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-  #     MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-  #   ports:
-  #     - "3306:3306"
-  #   volumes:
-  #     - mysql_data:/var/lib/mysql
-  #   networks:
-  #     - default-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
-  redis:
-    image: redis:latest
-    container_name: redis
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    networks:
-      - default-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: clickhouse
-    restart: always
-    ports:
-      - "8123:8123" # HTTP interface
-      - "9000:9000" # Native client interface OLAP
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
     ulimits:
       nofile:
-        soft: 262144
-        hard: 262144
+        soft: 65536
+        hard: 65536
+
+    mem_limit: 1g
+
+  redis:
+    image: redis:8.10.0-alpine
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    command: redis-server --appendonly yes
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - redis-data:/data
+
     networks:
-      - default-network
+      - global-network
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    mem_limit: 1g
 
   rabbitmq:
-    image: rabbitmq:latest
-    container_name: rabbitmq
-    restart: always
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    image: rabbitmq:4.3.4-management
+    hostname: rabbitmq
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
     ports:
-      - "5672:5672"
       - "15672:15672"
+
     networks:
-      - default-network
+      - global-network
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    mem_limit: 1g
 
   pgbouncer:
-    image: edoburu/pgbouncer:latest
-    container_name: pgbouncer
-    restart: always
-    environment:
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: mapdata_db
-      POOL_MODE: transaction
-      MAX_CLIENT_CONN: 100
-      DEFAULT_POOL_SIZE: 20
-      MIN_POOL_SIZE: 5
-      RESERVE_POOL_SIZE: 5
-      ADMIN_USERS: ${POSTGRES_USER}
+    image: edoburu/pgbouncer:v1.25.2-p0
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
     ports:
-      - "6432:5432"
-    depends_on:
-      - postgres
+      - "5432:5432"
+
     networks:
-      - default-network
+      - global-network
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "5432"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    mem_limit: 1g
 
   minio:
-    image: minio/minio:latest
-    container_name: minio
-    ports:
-      - "9100:9100" # Porta de acesso ao bucket MinIO
-      - "9101:9101" # Porta de acesso ao painel MinIO
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    command: >
+      server /data
+      --address ":9100"
+      --console-address ":9101"
+
     volumes:
-      - minio_data:/data
-    command: server /data --address "0.0.0.0:9100" --console-address "0.0.0.0:9101"
+      - minio-data:/data
+
     networks:
-      - default-network
+      - global-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    mem_limit: 1g
+
+  rustfs:
+    image: rustfs/rustfs:1.0.0-beta.12
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    volumes:
+      - rustfs-data:/data
+
+    networks:
+      - global-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    stop_grace_period: 30s
+
+    mem_limit: 1g
 
 volumes:
-  nginx_data:
-    driver: local
-  minio_data:
-    driver: local
-  postgres_data:
-    driver: local
-  # mysql_data:
-  #   driver: local
-  redis_data:
-    driver: local
-  clickhouse_data:
-    driver: local
-  jenkins_data:
-    driver: local
+  minio-data:
+  rabbitmq-data:
+  rustfs-data:
+  postgres-data:
+  redis-data:
 
 networks:
-  default-network:
+  global-network:
     external: true
-    name: global-network
